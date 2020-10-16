@@ -4,6 +4,7 @@
  * @description Pure functions to help funcitonally parse messages.
  * @todo Other parsing helpers can be made more abstract and placed here.
  */
+
 const helpers = {};
 
 // Captures all mentions, but includes a space before the @
@@ -41,3 +42,144 @@ const reduceReferences = ([text, refs], ref, index) => {
 helpers.reduceTextFromReferences = (text, refs) => refs.reduce(reduceReferences, [text, []]);
 
 export default helpers;
+
+const styling_directives = ['*', '_', '~', '`', '```', '>', '&gt;'];
+const recursive_directives = ['*', '_', '~', '>', '&gt;'];
+const styling_map = {
+    '*': {'name': 'strong', 'type': 'span'},
+    '_': {'name': 'emphasis', 'type': 'span'},
+    '~': {'name': 'strike', 'type': 'span'},
+    '`': {'name': 'preformatted', 'type': 'span'},
+    '```': {'name': 'preformatted_block', 'type': 'block'},
+    '>': {'name': 'quote', 'type': 'block'},
+    '&gt;': {'name': 'quote', 'type': 'block'}
+};
+
+const styling_templates = {
+    emphasis: (text) => `<i>${text}</i>`,
+    preformatted: (text) => `<code>${text}</code>`,
+    preformatted_block: (text) => `<code class="block">${text}</code>`,
+    quote: (text) => `<blockquote>${text}</blockquote>`,
+    strike: (text) => `<del>${text}</del>`,
+    strong: (text) => `<b>${text}</b>`,
+};
+
+const isQuoteDirective = (d) => ['>', '&gt;'].includes(d);
+
+function escape (text) {
+    return text
+        .replace(/\&/g, "&amp;")
+        .replace(/</g,  "&lt;")
+        .replace(/(\p{L}|\p{N}|\p{P})>/g,  "$1&gt;")
+        .replace(/'/g,  "&apos;")
+        .replace(/"/g,  "&quot;");
+}
+
+
+function getDirective (text, i) {
+    // TODO: blockquote is only valid if on own line
+    // TODO: blockquote without end quote is valid until end of text or of containing quote
+    let d;
+    if (styling_directives.includes(text.slice(i, i+4))) {
+        d = text.slice(i, i+4);
+    } else if (styling_directives.includes(text.slice(i, i+3))) {
+        d = text.slice(i, i+3);
+    } else if (styling_directives.includes(text.slice(i, i+1))) {
+        d = text.slice(i, i+1);
+    } else {
+        return null;
+    }
+    if (styling_map[d].type === 'span' && !text.slice(i+1).split('\n').shift().includes(d)) {
+        // span directive without closing part before end or line-break, so not valid
+        return null;
+    } else {
+        return d;
+    }
+}
+
+
+function getDirectiveLength (d, text, i) {
+    if (!d) {
+        return 0;
+    }
+    const begin = i;
+    i++;
+    if (isQuoteDirective(d)) {
+        i += text.slice(begin).split(/\n[^>]/).shift().length;
+        return i-begin;
+    } else {
+        // Set i to the last char just before the end of the direcive
+        const dtype = styling_map[d].type; // directive type
+        const isEnd = (i) => text.slice(i,i+d.length) === d || (dtype === 'span' && text[i] === '\n');
+        while (!isEnd(i)) { i++; }
+        if (i <= text.length-d.length) {
+            i += d.length;
+            return i-begin;
+        }
+    }
+    return 0;
+}
+
+
+function getDirectiveAndLength (text, i) {
+    const d = getDirective(text, i);
+    const length = getDirectiveLength(d, text, i);
+    return  { d, length };
+}
+
+
+function getDirectiveMarkup (text) {
+    let i = 0, html = '';
+    while (i < text.length) {
+        const d = getDirective(text, i);
+        if (d) {
+            const begin = i;
+            const template = styling_templates[styling_map[d].name];
+            i += d.length;
+
+            if (isQuoteDirective(d)) {
+                // The only directive that doesn't have a closing tag
+                i += text.slice(i).split(/\n[^>]/).shift().length;
+                const newtext = text.slice(begin+1, i).replace(/\n>/g, '\n');
+                html += `${template(getDirectiveMarkup(newtext))}`
+            } else {
+                const dtype = styling_map[d].type; // directive type
+                // Set i to the last char just before the end of the direcive
+                const isEnd = (i) => (i === text.length || text.slice(i,i+d.length) === d || dtype === 'span' && text[i] === '\n');
+                while (!isEnd(i)) { i++; }
+
+                if (i <= text.length-d.length) {
+                    if (recursive_directives.includes(d)) {
+                        html += `${d}${template(getDirectiveMarkup(text.slice(begin+1, i)))}${d}`
+                    } else {
+                        html += `${d}${template(text.slice(begin+d.length, i))}${d}`
+                    }
+                    i += d.length;
+                } else {
+                    // We reached the end without finding a match, go back to i+1
+                    i = begin+1;
+                }
+            }
+        } else {
+            html += text[i];
+            i++;
+        }
+    }
+    return html;
+}
+
+
+export function getMessageStylingReferences (text) {
+    let i = 0;
+    const references = [];
+    while (i < text.length) {
+        const { d, length } = getDirectiveAndLength(text, i);
+        if (d) {
+            const end = i+length;
+            references.push({'begin': i, end, 'html': getDirectiveMarkup(escape(text.slice(i, end))) });
+            i = end;
+        }
+        i++;
+    }
+    return references;
+}
