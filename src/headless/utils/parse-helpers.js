@@ -43,16 +43,15 @@ helpers.reduceTextFromReferences = (text, refs) => refs.reduce(reduceReferences,
 
 export default helpers;
 
-const styling_directives = ['*', '_', '~', '`', '```', '>', '&gt;'];
-const recursive_directives = ['*', '_', '~', '>', '&gt;'];
+const styling_directives = ['*', '_', '~', '`', '```', '>'];
+const recursive_directives = ['*', '_', '~', '>'];
 const styling_map = {
     '*': {'name': 'strong', 'type': 'span'},
     '_': {'name': 'emphasis', 'type': 'span'},
     '~': {'name': 'strike', 'type': 'span'},
     '`': {'name': 'preformatted', 'type': 'span'},
     '```': {'name': 'preformatted_block', 'type': 'block'},
-    '>': {'name': 'quote', 'type': 'block'},
-    '&gt;': {'name': 'quote', 'type': 'block'}
+    '>': {'name': 'quote', 'type': 'block'}
 };
 
 const styling_templates = {
@@ -76,20 +75,22 @@ function escape (text) {
 }
 
 
-function getDirective (text, i) {
+function getDirective (text, i, opening=true) {
     // TODO: blockquote is only valid if on own line
     // TODO: blockquote without end quote is valid until end of text or of containing quote
     let d;
     if (styling_directives.includes(text.slice(i, i+4))) {
         d = text.slice(i, i+4);
-    } else if (styling_directives.includes(text.slice(i, i+3))) {
+    } else if (
+            text.slice(i).match(/^```\s*\n/) && (i === 0 || text[i-1] === '\n' || text[i-1] === '>') ||
+            text.slice(i).match(/^```\s*$/) && (i === 0 || text[i-1] === '\n' || text[i-1] === '>')) {
         d = text.slice(i, i+3);
-    } else if (styling_directives.includes(text.slice(i, i+1))) {
+    } else if (styling_directives.includes(text.slice(i, i+1)) && text[i] !== text[i+1]) {
         d = text.slice(i, i+1);
     } else {
         return null;
     }
-    if (styling_map[d].type === 'span' && !text.slice(i+1).split('\n').shift().includes(d)) {
+    if (opening && styling_map[d].type === 'span' && !text.slice(i+1).split('\n').shift().includes(d)) {
         // span directive without closing part before end or line-break, so not valid
         return null;
     } else {
@@ -98,20 +99,22 @@ function getDirective (text, i) {
 }
 
 
+function isDirectiveEnd (d, i, text) {
+    const dtype = styling_map[d].type; // directive type
+    return i === text.length || getDirective(text, i, false) === d || (dtype === 'span' && text[i] === '\n');
+}
+
+
 function getDirectiveLength (d, text, i) {
-    if (!d) {
-        return 0;
-    }
+    if (!d) { return 0; }
     const begin = i;
-    i++;
+    i += d.length;
     if (isQuoteDirective(d)) {
         i += text.slice(begin).split(/\n[^>]/).shift().length;
         return i-begin;
     } else {
         // Set i to the last char just before the end of the direcive
-        const dtype = styling_map[d].type; // directive type
-        const isEnd = (i) => text.slice(i,i+d.length) === d || (dtype === 'span' && text[i] === '\n');
-        while (!isEnd(i)) { i++; }
+        while (!isDirectiveEnd(d, i, text)) { i++; }
         if (i <= text.length-d.length) {
             i += d.length;
             return i-begin;
@@ -123,7 +126,7 @@ function getDirectiveLength (d, text, i) {
 
 function getDirectiveAndLength (text, i) {
     const d = getDirective(text, i);
-    const length = getDirectiveLength(d, text, i);
+    const length = d ? getDirectiveLength(d, text, i) : 0;
     return  { d, length };
 }
 
@@ -143,10 +146,8 @@ function getDirectiveMarkup (text) {
                 const newtext = text.slice(begin+1, i).replace(/\n>/g, '\n');
                 html += `${template(getDirectiveMarkup(newtext))}`
             } else {
-                const dtype = styling_map[d].type; // directive type
                 // Set i to the last char just before the end of the direcive
-                const isEnd = (i) => (i === text.length || text.slice(i,i+d.length) === d || dtype === 'span' && text[i] === '\n');
-                while (!isEnd(i)) { i++; }
+                while (!isDirectiveEnd(d, i, text)) { i++; }
 
                 if (i <= text.length-d.length) {
                     if (recursive_directives.includes(d)) {
